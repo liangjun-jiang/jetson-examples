@@ -1,9 +1,14 @@
 # The tested JetPack versions.
 ALLOWED_L4T_VERSIONS:
-  - 35.3.1
-  - 35.4.1
-  - 35.5.0
-  - 36.3.0
+  - 35.3.1  # JetPack 5.1.1
+  - 35.4.1  # JetPack 5.1.2
+  - 35.5.0  # JetPack 5.1.3
+  - 36.3.0  # JetPack 6.0
+  - 36.4.0  # JetPack 6.1
+  - 36.4.3  # JetPack 6.2
+  - 36.4.4  # JetPack 6.2.1
+  - 36.4.5  # JetPack 6.2.2
+  - 36.5.0  # JetPack 6.3
 REQUIRED_DISK_SPACE: 15  # in GB
 REQUIRED_MEM_SPACE: 7
 PACKAGES:
