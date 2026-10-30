@@ -15,6 +15,10 @@ STARTUP_TIMEOUT="${GEMMA4_STARTUP_TIMEOUT:-600}"
 CTX_SIZE="${GEMMA4_CTX_SIZE:-8192}"
 DOCKER_CMD=()
 GPU_FLAGS=()
+GPU_ENV=(
+    -e NVIDIA_VISIBLE_DEVICES=all
+    -e NVIDIA_DRIVER_CAPABILITIES=compute,utility
+)
 LIB_MOUNTS=()
 APT_UPDATED=0
 
@@ -230,16 +234,39 @@ select_gpu_layers() {
     fi
 }
 
-probe_gpu_mode_once() {
-    if "${DOCKER_CMD[@]}" run --rm --entrypoint /bin/sh --runtime nvidia "${IMAGE_NAME}" -lc "exit 0" >/dev/null 2>&1; then
-        GPU_FLAGS=(--runtime nvidia)
-        log "Using GPU mode: --runtime nvidia"
+probe_gpu_runtime() {
+    local runtime_name="$1"
+    shift
+    local probe_output=""
+
+    # mode=auto injects Jetson devices only when NVIDIA_VISIBLE_DEVICES is set.
+    # --network host keeps this check off the bridge network.
+    if probe_output="$("${DOCKER_CMD[@]}" run --rm --network host --entrypoint /bin/sh \
+        "$@" \
+        "${GPU_ENV[@]}" \
+        "${LIB_MOUNTS[@]}" \
+        "${IMAGE_NAME}" \
+        -lc 'test -e /dev/nvmap' 2>&1)"; then
+        GPU_FLAGS=("$@")
+        log "Using GPU mode: ${runtime_name}"
         return 0
     fi
 
-    if "${DOCKER_CMD[@]}" run --rm --entrypoint /bin/sh --gpus all "${IMAGE_NAME}" -lc "exit 0" >/dev/null 2>&1; then
-        GPU_FLAGS=(--gpus all)
-        log "Using GPU mode: --gpus all"
+    log "${runtime_name} probe failed:"
+    if [[ -z "${probe_output}" ]]; then
+        echo "/dev/nvmap was not visible in the container." >&2
+    else
+        printf '%s\n' "${probe_output}" >&2
+    fi
+    return 1
+}
+
+probe_gpu_mode_once() {
+    if probe_gpu_runtime "--runtime nvidia" --runtime nvidia; then
+        return 0
+    fi
+
+    if probe_gpu_runtime "--gpus all" --gpus all; then
         return 0
     fi
 
@@ -305,6 +332,13 @@ wait_for_server_ready() {
 
     log "Waiting for Gemma4 server at ${endpoint} (timeout: ${STARTUP_TIMEOUT}s)..."
     while [[ "${elapsed}" -lt "${STARTUP_TIMEOUT}" ]]; do
+        if "${DOCKER_CMD[@]}" logs "${CONTAINER_NAME}" 2>&1 | grep -Eq 'no usable GPU found|ggml_cuda_init: failed'; then
+            echo "llama-server started without a usable GPU."
+            echo "Recent logs:"
+            "${DOCKER_CMD[@]}" logs --tail 80 "${CONTAINER_NAME}" || true
+            return 1
+        fi
+
         if [[ -z "$("${DOCKER_CMD[@]}" ps -q -f name="^/${CONTAINER_NAME}$")" ]]; then
             echo "Container exited before the model became ready."
             echo "Recent logs:"
@@ -355,6 +389,7 @@ run_container() {
     "${DOCKER_CMD[@]}" run -d \
         --name "${CONTAINER_NAME}" \
         "${GPU_FLAGS[@]}" \
+        "${GPU_ENV[@]}" \
         -p "${HOST_PORT}:${CONTAINER_PORT}" \
         -v "${MODELS_DIR}":/models \
         "${LIB_MOUNTS[@]}" \
@@ -372,8 +407,8 @@ main() {
     ensure_docker_ready
     ensure_image
     ensure_model
-    probe_gpu_mode
     collect_library_mounts
+    probe_gpu_mode
     run_container
     wait_for_server_ready
 
